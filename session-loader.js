@@ -3,7 +3,7 @@ const path = require("path");
 
 const BACKEND_URL =
     process.env.PAIR_API_URL ||
-    "https://mrnobody-pair-production-627d.up.railway.app";
+    "https://mrnobody-pair-production-9530.up.railway.app";
 
 const AUTH_DIR = path.join(__dirname, "auth_info");
 
