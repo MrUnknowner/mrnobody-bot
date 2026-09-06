@@ -1,4 +1,3 @@
-
 const fs = require("fs");
 const path = require("path");
 const pino = require("pino");
@@ -14,7 +13,6 @@ const {
 const {
     AUTH_DIR,
     downloadSession,
-    hasLocalSession,
     getSessionId,
     pairRequest
 } = require("./session-loader");
@@ -41,7 +39,6 @@ const {
     waitForQueueToFinish
 } = require("./job-queue");
 
-let syncing = false;
 let syncPromise = null;
 let syncTimer = null;
 let reconnectTimer = null;
@@ -85,25 +82,87 @@ function collectAuthFiles() {
         return files;
     }
 
-    const entries = fs.readdirSync(
-        AUTH_DIR,
-        { withFileTypes: true }
-    );
-
-    for (const entry of entries) {
-        if (!entry.isFile()) continue;
-
-        const filePath = path.join(
+    const entries =
+        fs.readdirSync(
             AUTH_DIR,
-            entry.name
+            {
+                withFileTypes: true
+            }
         );
 
-        files[entry.name] =
-            fs.readFileSync(filePath)
-                .toString("base64");
+    for (const entry of entries) {
+        if (!entry.isFile()) {
+            continue;
+        }
+
+        const filePath =
+            path.join(
+                AUTH_DIR,
+                entry.name
+            );
+
+        try {
+            files[entry.name] =
+                fs.readFileSync(
+                    filePath
+                ).toString(
+                    "base64"
+                );
+        } catch (error) {
+            console.error(
+                `Failed reading auth file ${entry.name}:`,
+                error.message
+            );
+        }
     }
 
     return files;
+}
+
+function clearAuthDirectory() {
+    if (!fs.existsSync(AUTH_DIR)) {
+        return;
+    }
+
+    const entries =
+        fs.readdirSync(
+            AUTH_DIR,
+            {
+                withFileTypes: true
+            }
+        );
+
+    for (const entry of entries) {
+        const filePath =
+            path.join(
+                AUTH_DIR,
+                entry.name
+            );
+
+        try {
+            if (entry.isDirectory()) {
+                fs.rmSync(
+                    filePath,
+                    {
+                        recursive: true,
+                        force: true
+                    }
+                );
+            } else {
+                fs.rmSync(
+                    filePath,
+                    {
+                        force: true
+                    }
+                );
+            }
+        } catch (error) {
+            console.error(
+                `Failed clearing auth file ${entry.name}:`,
+                error.message
+            );
+        }
+    }
 }
 
 async function syncSession() {
@@ -111,53 +170,57 @@ async function syncSession() {
         return syncPromise;
     }
 
-    syncPromise = (async () => {
-        try {
-            const session =
-                getSessionId();
+    syncPromise =
+        (async () => {
+            try {
+                const session =
+                    getSessionId();
 
-            const files =
-                collectAuthFiles();
+                const files =
+                    collectAuthFiles();
 
-            if (!files["creds.json"]) {
-                return;
-            }
+                if (
+                    !files["creds.json"]
+                ) {
+                    return;
+                }
 
-            const response =
-                await pairRequest(
-                    `/session/${session}`,
-                    {
-                        method: "PUT",
-                        body: JSON.stringify({
-                            files
-                        })
-                    }
+                const response =
+                    await pairRequest(
+                        `/session/${session}`,
+                        {
+                            method: "PUT",
+                            body:
+                                JSON.stringify({
+                                    files
+                                })
+                        }
+                    );
+
+                if (!response.ok) {
+                    const text =
+                        await response.text();
+
+                    console.error(
+                        `Session sync failed [${response.status}]:`,
+                        text
+                    );
+
+                    return;
+                }
+
+                console.log(
+                    "🔄 Session synced"
                 );
-
-            if (!response.ok) {
-                const text =
-                    await response.text();
-
+            } catch (error) {
                 console.error(
-                    `Session sync failed [${response.status}]:`,
-                    text
+                    "Session sync error:",
+                    error.message
                 );
-
-                return;
+            } finally {
+                syncPromise = null;
             }
-
-            console.log(
-                "🔄 Session synced"
-            );
-        } catch (error) {
-            console.error(
-                "Session sync error:",
-                error.message
-            );
-        } finally {
-            syncPromise = null;
-        }
-    })();
+        })();
 
     return syncPromise;
 }
@@ -165,19 +228,20 @@ async function syncSession() {
 function scheduleSync() {
     clearTimeout(syncTimer);
 
-    syncTimer = setTimeout(
-        () => {
-            syncSession().catch(
-                (error) => {
-                    console.error(
-                        "Scheduled sync error:",
-                        error.message
-                    );
-                }
-            );
-        },
-        2000
-    );
+    syncTimer =
+        setTimeout(
+            () => {
+                syncSession().catch(
+                    (error) => {
+                        console.error(
+                            "Scheduled sync error:",
+                            error.message
+                        );
+                    }
+                );
+            },
+            2000
+        );
 }
 
 async function handlePendingSelection(
@@ -187,7 +251,9 @@ async function handlePendingSelection(
     userId
 ) {
     const number =
-        Number(text.trim());
+        Number(
+            text.trim()
+        );
 
     if (
         !Number.isInteger(number) ||
@@ -197,29 +263,19 @@ async function handlePendingSelection(
         return false;
     }
 
-    // Movie, video and song keep their own
-    // in-memory selection state.
-    const downloaderHandled =
-        await handleDownloaderSelection({
-            sock,
-            msg,
-            userJid: userId,
-            selection: String(number)
-        });
-
-    if (downloaderHandled) {
-        return true;
-    }
-
-    // Facebook, TikTok and Instagram use
-    // the shared selection store.
     const commandNames = [
+        "movie",
+        "video",
+        "song",
         "fb",
         "tiktok",
         "insta"
     ];
 
-    for (const commandName of commandNames) {
+    for (
+        const commandName
+        of commandNames
+    ) {
         const pending =
             getSelection(
                 userId,
@@ -231,7 +287,9 @@ async function handlePendingSelection(
         }
 
         const command =
-            getCommand(commandName);
+            getCommand(
+                commandName
+            );
 
         if (
             !command ||
@@ -246,9 +304,7 @@ async function handlePendingSelection(
             sock,
             command,
             commandName,
-            [String(number)],
-            userId,
-            text
+            [String(number)]
         );
 
         return true;
@@ -263,33 +319,58 @@ async function handleDownloaderSelection({
     userJid,
     selection
 }) {
-    const commandNames = ["movie", "video", "song"];
+    const commandNames = [
+        "movie",
+        "video",
+        "song",
+        "fb",
+        "tiktok",
+        "insta"
+    ];
 
-    for (const name of commandNames) {
-        const command = getCommand(name);
+    for (
+        const name
+        of commandNames
+    ) {
+        const command =
+            getCommand(name);
 
-        if (!command) continue;
-
-        if (typeof command.handleSelection === "function") {
-            const handled = await command.handleSelection({
-                sock,
-                msg,
-                userJid,
-                selection
-            });
-
-            if (handled) return true;
+        if (!command) {
+            continue;
         }
 
-        if (typeof command.handleQuality === "function") {
-            const handled = await command.handleQuality({
-                sock,
-                msg,
-                userJid,
-                selection
-            });
+        if (
+            typeof command.handleSelection ===
+            "function"
+        ) {
+            const handled =
+                await command.handleSelection({
+                    sock,
+                    msg,
+                    userJid,
+                    selection
+                });
 
-            if (handled) return true;
+            if (handled) {
+                return true;
+            }
+        }
+
+        if (
+            typeof command.handleQuality ===
+            "function"
+        ) {
+            const handled =
+                await command.handleQuality({
+                    sock,
+                    msg,
+                    userJid,
+                    selection
+                });
+
+            if (handled) {
+                return true;
+            }
         }
     }
 
@@ -301,18 +382,42 @@ async function processCommand(
     sock,
     command,
     commandName,
-    args,
-    userJid = null,
-    originalText = null
+    args
 ) {
+    const text =
+        String(
+            msg.message?.conversation ||
+            msg.message
+                ?.extendedTextMessage
+                ?.text ||
+            ""
+        ).trim();
+
     const userId =
-        userJid ||
         msg.key.participant ||
         msg.key.remoteJid;
 
+    if (
+        /^\d+$/.test(text)
+    ) {
+        const handled =
+            await handleDownloaderSelection({
+                sock,
+                msg,
+                userJid: userId,
+                selection: text
+            });
+
+        if (handled) {
+            return;
+        }
+    }
+
     if (command.ownerOnly) {
         const allowed =
-            await isOwnerOrAdmin(userId);
+            await isOwnerOrAdmin(
+                userId
+            );
 
         if (!allowed) {
             return;
@@ -323,10 +428,8 @@ async function processCommand(
         sock,
         msg,
         args,
-        userJid: userId,
         command: commandName,
         text:
-            originalText ??
             `.${commandName} ${args.join(" ")}`
     };
 
@@ -355,7 +458,9 @@ async function processCommand(
                                         `❌ Failed to process .${commandName}`
                                 }
                             );
-                        } catch (sendError) {
+                        } catch (
+                            sendError
+                        ) {
                             console.error(
                                 "Heavy command error reply failed:",
                                 sendError.message
@@ -364,7 +469,9 @@ async function processCommand(
                     }
                 );
 
-            if (!queueResult.accepted) {
+            if (
+                !queueResult.accepted
+            ) {
                 await sock.sendMessage(
                     msg.key.remoteJid,
                     {
@@ -379,7 +486,10 @@ async function processCommand(
                 return;
             }
 
-            if (queueResult.position === 0) {
+            if (
+                queueResult.position ===
+                0
+            ) {
                 await sock.sendMessage(
                     msg.key.remoteJid,
                     {
@@ -418,7 +528,9 @@ async function processCommand(
                         "❌ Something went wrong while processing the command."
                 }
             );
-        } catch (sendError) {
+        } catch (
+            sendError
+        ) {
             console.error(
                 "Command error reply failed:",
                 sendError.message
@@ -431,7 +543,10 @@ async function processMessage(
     msg,
     sock
 ) {
-    if (!msg || !msg.message) {
+    if (
+        !msg ||
+        !msg.message
+    ) {
         return;
     }
 
@@ -446,7 +561,9 @@ async function processMessage(
         msg.key.participant ||
         msg.key.remoteJid;
 
-    if (!text.trim().startsWith(".")) {
+    if (
+        !text.trim().startsWith(".")
+    ) {
         await handlePendingSelection(
             msg,
             sock,
@@ -460,17 +577,23 @@ async function processMessage(
     const user =
         await ensureUser(
             userId,
-            msg.pushName || null
+            msg.pushName ||
+                null
         );
 
-    if (user?.is_banned) {
+    if (
+        user?.is_banned
+    ) {
         return;
     }
 
     const lastMessageTime =
-        userRateLimit.get(userId) || 0;
+        userRateLimit.get(
+            userId
+        ) || 0;
 
-    const now = Date.now();
+    const now =
+        Date.now();
 
     if (
         now - lastMessageTime <
@@ -492,7 +615,9 @@ async function processMessage(
     );
 
     const parts =
-        text.trim().split(/\s+/);
+        text
+            .trim()
+            .split(/\s+/);
 
     const commandName =
         parts[0]
@@ -503,7 +628,9 @@ async function processMessage(
         parts.slice(1);
 
     const command =
-        getCommand(commandName);
+        getCommand(
+            commandName
+        );
 
     if (!command) {
         return;
@@ -521,7 +648,9 @@ async function processMessage(
 async function processMessageQueue(
     sock
 ) {
-    if (processingMessages) {
+    if (
+        processingMessages
+    ) {
         return;
     }
 
@@ -539,7 +668,9 @@ async function processMessageQueue(
                     msg,
                     sock
                 );
-            } catch (error) {
+            } catch (
+                error
+            ) {
                 console.error(
                     "Message processing error:",
                     error.message
@@ -547,7 +678,8 @@ async function processMessageQueue(
             }
         }
     } finally {
-        processingMessages = false;
+        processingMessages =
+            false;
 
         if (
             messageQueue.length > 0
@@ -577,7 +709,9 @@ function enqueueMessage(
         return;
     }
 
-    if (shuttingDown) {
+    if (
+        shuttingDown
+    ) {
         return;
     }
 
@@ -592,7 +726,9 @@ function enqueueMessage(
         return;
     }
 
-    messageQueue.push(msg);
+    messageQueue.push(
+        msg
+    );
 
     processMessageQueue(
         sock
@@ -606,22 +742,56 @@ function enqueueMessage(
     );
 }
 
-async function startBot() {
+async function startBot(
+    forceSessionRefresh = true
+) {
     try {
-        if (!hasLocalSession()) {
+        console.log(
+            "🚀 Starting MRNOBODY MD Bot..."
+        );
+
+        const sessionId =
+            getSessionId();
+
+        console.log(
+            `🔐 SESSION_ID detected: ${sessionId.slice(0, 4)}••••••••••••`
+        );
+
+        if (
+            forceSessionRefresh
+        ) {
+            console.log(
+                "🧹 Preparing fresh session files..."
+            );
+
+            clearAuthDirectory();
+
             console.log(
                 "📥 Downloading MRNOBODY Session..."
             );
 
             await downloadSession();
+
+            console.log(
+                "✅ Full MRNOBODY session loaded"
+            );
+        } else {
+            console.log(
+                "♻️ Reusing local WhatsApp session..."
+            );
         }
+
+        console.log(
+            "🔌 Connecting to WhatsApp..."
+        );
 
         const {
             state,
             saveCreds
-        } = await useMultiFileAuthState(
-            AUTH_DIR
-        );
+        } =
+            await useMultiFileAuthState(
+                AUTH_DIR
+            );
 
         const sock =
             makeWASocket({
@@ -655,8 +825,11 @@ async function startBot() {
             async () => {
                 try {
                     await saveCreds();
+
                     scheduleSync();
-                } catch (error) {
+                } catch (
+                    error
+                ) {
                     console.error(
                         "Credentials save error:",
                         error.message
@@ -677,6 +850,15 @@ async function startBot() {
 
                 if (
                     connection ===
+                    "connecting"
+                ) {
+                    console.log(
+                        "🔌 WhatsApp connection is starting..."
+                    );
+                }
+
+                if (
+                    connection ===
                     "open"
                 ) {
                     reconnectAttempts =
@@ -685,9 +867,11 @@ async function startBot() {
                     console.log(
                         "╔════════════════════════════╗"
                     );
+
                     console.log(
                         "║  MRNOBODY MD BOT ONLINE    ║"
                     );
+
                     console.log(
                         "╚════════════════════════════╝"
                     );
@@ -751,8 +935,12 @@ async function startBot() {
                     reconnectTimer =
                         setTimeout(
                             () => {
-                                startBot().catch(
-                                    (error) => {
+                                startBot(
+                                    false
+                                ).catch(
+                                    (
+                                        error
+                                    ) => {
                                         console.error(
                                             "Reconnect startup error:",
                                             error.message
@@ -772,7 +960,8 @@ async function startBot() {
                 messages
             }) => {
                 for (
-                    const msg of messages
+                    const msg
+                    of messages
                 ) {
                     enqueueMessage(
                         msg,
@@ -781,13 +970,17 @@ async function startBot() {
                 }
             }
         );
-    } catch (error) {
+    } catch (
+        error
+    ) {
         console.error(
-            "Bot startup error:",
-            error
+            "❌ Bot startup error:",
+            error.message
         );
 
-        if (shuttingDown) {
+        if (
+            shuttingDown
+        ) {
             return;
         }
 
@@ -799,7 +992,9 @@ async function startBot() {
             setTimeout(
                 () => {
                     startBot().catch(
-                        (retryError) => {
+                        (
+                            retryError
+                        ) => {
                             console.error(
                                 "Startup retry error:",
                                 retryError.message
@@ -815,7 +1010,9 @@ async function startBot() {
 async function gracefulShutdown(
     signal
 ) {
-    if (shuttingDown) {
+    if (
+        shuttingDown
+    ) {
         return;
     }
 
@@ -828,12 +1025,15 @@ async function gracefulShutdown(
     clearTimeout(
         syncTimer
     );
+
     clearTimeout(
         reconnectTimer
     );
+
     clearTimeout(
         startupRetryTimer
     );
+
     clearInterval(
         rateLimitCleanupTimer
     );
@@ -842,7 +1042,9 @@ async function gracefulShutdown(
         await waitForQueueToFinish();
 
         await syncSession();
-    } catch (error) {
+    } catch (
+        error
+    ) {
         console.error(
             "Graceful shutdown error:",
             error.message
