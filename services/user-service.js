@@ -1,5 +1,5 @@
 const PAIR_API_URL =
-    "https://mrnobody-pair-production-fded.up.railway.app";
+    "https://mrnobody-pair-production-627d.up.railway.app";
 
 function getSessionId() {
     return process.env.SESSION_ID
